@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Заправка в рейсе - макет</title>
+<style>
+  :root{--brand:#ff6200;--brand-soft:#fff0e6;--ink:#000;--sub:#64748b;--bg:#f5f5f5;--ok:#16a34a;--ok-soft:#e8f7ee}
+  *{box-sizing:border-box}
+  body{margin:0;background:#e9ebef;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--ink)}
+  header.page{padding:28px 32px 8px}
+  header.page h1{margin:0;font-size:22px}
+  header.page p{margin:6px 0 0;color:#5b6472;font-size:14px;max-width:760px}
+  .canvas{display:flex;gap:40px;padding:24px 32px 48px;overflow-x:auto;align-items:flex-start}
+  .frame{flex:none;display:flex;flex-direction:column;gap:10px}
+  .frame .label{font-size:13px;color:#5b6472;font-weight:600}
+  .screen{width:390px;height:844px;background:#fff;border-radius:36px;overflow:hidden;position:relative;display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(17,24,39,.08)}
+  .status{height:47px;display:flex;justify-content:space-between;align-items:flex-end;padding:0 28px 8px;font-size:15px;font-weight:600;flex:none}
+  .content{flex:1;padding:4px 24px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+  .title{font-size:28px;font-weight:700;margin:4px 0 0}
+  .muted{color:var(--sub);font-size:12px}
+  .card{background:var(--bg);border-radius:16px;padding:16px}
+  .route{font-size:20px;font-weight:600;margin:4px 0}
+  .limit{font-size:34px;font-weight:700;letter-spacing:-.5px}
+  .progress{height:6px;background:#e3e6eb;border-radius:3px;overflow:hidden;margin-top:10px}
+  .progress i{display:block;height:100%;background:var(--brand)}
+  .btn{display:block;width:100%;text-align:center;background:var(--brand);color:#fff;font-weight:600;font-size:16px;border-radius:999px;padding:16px}
+  .bottom{padding:12px 24px 34px;flex:none}
+  .summary .row{display:flex;justify-content:space-between;padding:8px 0;font-size:14px}
+  .summary .row span:first-child{color:var(--sub)}
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center}
+  .okicon{width:72px;height:72px;border-radius:50%;background:var(--ok-soft);color:var(--ok);display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:700}
+  .big{font-size:24px;font-weight:700}
+  .note{border-left:3px solid var(--brand);background:#fff;padding:12px 16px;border-radius:8px;font-size:13px;color:#4b5563;max-width:390px}
+</style>
+</head>
+<body>
+<header class="page">
+  <h1>Заправка в рейсе - сценарий водителя</h1>
+  <p>Макет первого и последнего экранов. Экраны 390 × 844. Промежуточные экраны (выбор АЗС, топлива, колонки, суммы, процесс заправки) не нарисованы: их проектирует кандидат. Данные на макете примерные.</p>
+</header>
+
+<div class="canvas">
+
+  <div class="frame">
+    <div class="label">1 · Главный</div>
+    <div class="screen">
+      <div class="status"><span>9:41</span><span>▮▮▮ ▭</span></div>
+      <div class="content">
+        <div class="title">Заправка в рейсе</div>
+        <div class="card">
+          <div class="muted">Текущий рейс · 16 октября</div>
+          <div class="route">Москва → Казань</div>
+          <div class="muted">Тягач А123ВС 77 · прицеп АВ 4512 77</div>
+        </div>
+        <div class="card">
+          <div class="muted">Лимит на топливо</div>
+          <div class="limit">12 450 ₽</div>
+          <div class="muted">из 20 000 ₽</div>
+          <div class="progress"><i style="width:62%"></i></div>
+        </div>
+      </div>
+      <div class="bottom"><span class="btn">Заправиться</span></div>
+    </div>
+  </div>
+
+  <div class="frame">
+    <div class="label">N · Итог</div>
+    <div class="screen">
+      <div class="status"><span>9:41</span><span>▮▮▮ ▭</span></div>
+      <div class="content">
+        <div class="center">
+          <div class="okicon">✓</div>
+          <div class="big">Заправка завершена</div>
+          <div class="card summary" style="width:100%;text-align:left">
+            <div class="row"><span>Залито</span><span>69,7 л</span></div>
+            <div class="row"><span>Списано</span><span>5 000 ₽</span></div>
+            <div class="row"><span>Остаток лимита</span><span>7 450 ₽</span></div>
+          </div>
+          <div class="muted">Чек отправлен диспетчеру</div>
+        </div>
+      </div>
+      <div class="bottom"><span class="btn">На главную</span></div>
+    </div>
+  </div>
+
+  <div class="frame" style="padding-top:28px">
+    <div class="note">Между этими экранами водитель выбирает АЗС, топливо, колонку и сумму, затем ждёт завершения заправки. Сколько экранов и какие, решаете вы.</div>
+  </div>
+
+</div>
+</body>
+</html>
