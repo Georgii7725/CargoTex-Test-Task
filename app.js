@@ -18,9 +18,10 @@
   // ── форматирование ──
   const round2 = (n) => Math.round(n * 100) / 100;
   const num = (n, digits) => n.toLocaleString('ru-RU', { minimumFractionDigits: digits, maximumFractionDigits: 2 });
-  const rub = (n) => num(n, n % 1 ? 2 : 0) + ' ₽';
-  const lit = (n) => num(n, 0) + ' л';
-  const perL = (n) => num(n, 2) + ' ₽/л';
+  const NBSP = '\u00a0';  // неразрывный пробел: «₽» и «л» не уедут на новую строку
+  const rub = (n) => num(n, n % 1 ? 2 : 0) + NBSP + '₽';
+  const lit = (n) => num(n, 0) + NBSP + 'л';
+  const perL = (n) => num(n, 2) + NBSP + '₽/л';
   const time = (ts) => new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
   const dateRu = (iso) => { const [, m, d] = iso.split('-'); return Number(d) + ' ' + MONTHS[m - 1]; };
@@ -42,7 +43,12 @@
   }
 
   // ── состояние экрана ──
-  const ui = { screen: 'home', online: true, error: null };
+  const ui = {
+    screen: 'home',
+    online: true,
+    error: null,    // ошибка загрузки данных экрана
+    notice: null    // подсказка вверху экрана: { kind: 'warn' | 'err', text }
+  };
 
   // ── связь ──
   const NET = 'NETWORK_ERROR';
@@ -89,14 +95,20 @@
     if (!v) healTimer = setInterval(refresh, 10000);
     drawNet();
   }
+  const NET_TEXT = {
+    sending: 'Нет связи. Заказ сохранён и уйдёт один раз, когда связь вернётся.'
+  };
   function drawNet() {
     $net.hidden = ui.online;
-    $net.textContent = 'Нет связи. ' + (S.syncAt ? 'Данные на ' + time(S.syncAt) + ', обновим сами.' : 'Повторим сами.');
+    $net.textContent = NET_TEXT[ui.screen] ||
+      'Нет связи. ' + (S.syncAt ? 'Данные на ' + time(S.syncAt) + ', обновим сами.' : 'Повторим сами.');
   }
 
   const ERRORS = {
     NETWORK_ERROR: 'нет связи',
-    STATION_NOT_FOUND: 'АЗС не найдена'
+    STATION_NOT_FOUND: 'АЗС не найдена',
+    INVALID_REQUEST: 'в заказе не хватает данных',
+    FUEL_NOT_AVAILABLE: 'на этой колонке нет такого топлива'
   };
   const errText = (e) => ERRORS[e.code] || e.message;
 
@@ -109,9 +121,10 @@
     $app.innerHTML = SCREENS[ui.screen]();
     drawNet();
   }
-  function go(screen) {
+  function go(screen, notice) {
     ui.screen = screen;
     ui.error = null;
+    ui.notice = notice || null;
     render();
     window.scrollTo(0, 0);
     refresh();
@@ -127,7 +140,10 @@
         ${back ? `<button class="back" data-act="go" data-arg="${back}" aria-label="Назад">←</button>` : ''}
         <h1>${title}</h1>
       </header>
-      <main class="body">${body}</main>
+      <main class="body">
+        ${ui.notice ? `<div class="note ${ui.notice.kind}">${ui.notice.text}</div>` : ''}
+        ${body}
+      </main>
       ${bottom ? `<footer class="bar">${bottom}</footer>` : ''}`;
   }
 
@@ -380,13 +396,108 @@
     save();
     render();
   };
-  ACTIONS.order = () => go('sending');
-
   // ── заказ ──
-  SCREENS.sending = () => page({
-    title: 'Отправляем заказ',
-    back: 'volume',
-    body: '<p class="muted">Экран в работе.</p>'
+  // Заказ живёт в S.order и переживает перезагрузку:
+  //   S.order без id — заказ отправлен, ответа сервера ещё нет;
+  //   S.order с id   — заказ принят, его состояние — в S.fueling (последний ответ сервера).
+  const newRequestId = () => 'req_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const homeButton = '<button class="btn alt" data-act="go" data-arg="home">На главную</button>';
+
+  ACTIONS.order = () => {
+    if (S.order) return go('sending');  // заказ уже есть — второй не создаём (README, расхождение 14)
+    const st = station();
+    const d = S.draft;
+    // clientRequestId создаём и сохраняем ДО отправки. Если ответ потеряется или страница
+    // перезагрузится, повтор с тем же id вернёт уже созданный заказ, а не создаст второй.
+    S.order = {
+      req: { stationId: st.id, pump: d.pump, fuel: d.fuel, liters: d.liters, price: st.prices[d.fuel], clientRequestId: newRequestId() },
+      at: Date.now(),
+      what: `${short(st.name)} · колонка ${pumpName(st, d.pump)}`,
+      fuelName: FUELS[d.fuel],
+      limitBefore: S.trip.limitLeft  // чтобы на итоге проверить, вернулся ли холд
+    };
+    save();
+    go('sending');  // экран с кнопкой исчезает сразу: второму нажатию некуда попасть
+  };
+
+  // Отправка. Повторяем только при потере связи и всегда с тем же clientRequestId.
+  let sending = false;
+  LOADERS.sending = async function send() {
+    const o = S.order;
+    if (sending || !o || o.id) return;
+    sending = true;
+    ui.error = null;
+    render();
+    try {
+      accept(await retry('startFueling', [o.req], 4));
+    } catch (e) {
+      if (e.code === NET) ui.error = e;  // заказ остаётся сохранённым: дошлём, когда связь вернётся
+      else rejected(e);                  // сервер отказал: заказа нет, холда нет
+    }
+    sending = false;
+    if (ui.screen === 'sending') render();
+  };
+
+  function accept(f) {
+    S.order.id = f.id;
+    S.mine = (S.mine || []).concat(f.id).slice(-20);  // свои заказы: getActiveFueling видит только последний
+    S.fueling = f;
+    save();
+    go('fueling');
+  }
+
+  // Сервер отказал. Возвращаем водителя туда, где это можно исправить, и объясняем, что случилось.
+  function rejected(e) {
+    const req = S.order.req;
+    S.order = null;
+    save();
+    const st = station();
+    const d = e.details || {};
+    const fixLiters = () => { if (S.draft.liters) S.draft.liters = clamp(S.draft.liters, bounds(st, S.draft.fuel)); };
+    if (e.code === 'PRICE_CHANGED') {
+      // Новая цена с сервера. Подтверждение — новое нажатие «Заправить» с новой суммой.
+      st.prices[req.fuel] = d.newPrice;
+      st.fuels.find((f) => f.code === req.fuel).price = d.newPrice;
+      fixLiters();
+      return go('volume', { kind: 'warn', text: `Цена изменилась: было ${perL(d.oldPrice)}, стало ${perL(d.newPrice)}. Проверьте сумму и нажмите «Заправить» ещё раз.` });
+    }
+    if (e.code === 'LIMIT_EXCEEDED') {
+      S.trip.limitLeft = d.available;
+      fixLiters();
+      return go('volume', { kind: 'warn', text: `Доступно только ${rub(d.available)} — максимум объёма пересчитан.` });
+    }
+    if (e.code === 'INVALID_LITERS') {
+      fixLiters();
+      return go('volume', { kind: 'warn', text: `АЗС принимает от ${lit(d.min)} до ${lit(d.max)} за один заказ.` });
+    }
+    if (e.code === 'PUMP_BUSY') {
+      return go('pumps', { kind: 'warn', text: `АЗС считает колонку ${pumpName(st, req.pump)} занятой. Если вы стоите у неё — попробуйте через минуту или выберите другую.` });
+    }
+    go('volume', { kind: 'err', text: 'Заказ не принят: ' + esc(errText(e)) + '.' });
+  }
+
+  SCREENS.sending = () => {
+    const o = S.order;
+    if (!o) return page({ title: 'Заказ', body: '<p class="muted">Активного заказа нет.</p>', bottom: homeButton });
+    return page({
+      title: 'Отправляем заказ',
+      body: `
+        <section class="card">
+          <div class="muted">${esc(o.what)}</div>
+          <div class="route">${o.fuelName} · ${lit(o.req.liters)}</div>
+          <div class="muted">${rub(round2(o.req.liters * o.req.price))} по ${perL(o.req.price)}</div>
+        </section>
+        ${ui.error
+          ? '<div class="note warn">Нет связи. Заказ сохранён и уйдёт один раз, как только связь вернётся. Нажимать ещё раз не нужно.</div>'
+          : '<p class="muted">Отправляем на АЗС… Заказ уйдёт один раз, даже если связь моргнёт.</p>'}`,
+      bottom: (ui.error ? '<button class="btn" data-act="retry">Проверить сейчас</button>' : '') + homeButton
+    });
+  };
+
+  // ── заправка ──
+  SCREENS.fueling = () => page({
+    title: 'Заправка',
+    body: `<p class="muted">Заказ ${esc(S.fueling.id)}: ${esc(S.fueling.status)}. Экран в работе.</p>`
   });
 
   // ── отладочная панель: index.html?debug ──
