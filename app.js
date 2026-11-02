@@ -18,7 +18,7 @@
   // ── форматирование ──
   const round2 = (n) => Math.round(n * 100) / 100;
   const num = (n, digits) => n.toLocaleString('ru-RU', { minimumFractionDigits: digits, maximumFractionDigits: 2 });
-  const rub = (n) => num(n, n % 1 ? 2 : 0) + ' ₽';
+  const rub = (n) => num(n, n % 1 ? 2 : 0) + ' ₽';
   const time = (ts) => new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
   const dateRu = (iso) => { const [, m, d] = iso.split('-'); return Number(d) + ' ' + MONTHS[m - 1]; };
@@ -151,16 +151,50 @@
 
   SCREENS.home = () => {
     const t = S.trip;
-    return page({
-      title: 'Заправка в рейсе',
-      body: t
-        ? `<section class="card"><div class="route">${esc(t.from)} → ${esc(t.to)}</div><div class="limit">${rub(t.limitLeft)}</div></section>`
-        : ui.error
+    if (!t) {
+      return page({
+        title: 'Заправка в рейсе',
+        body: ui.error
           ? `<div class="note err">Не удалось загрузить рейс: ${esc(errText(ui.error))}.</div>
              <button class="btn alt" data-act="go" data-arg="home">Повторить</button>`
           : '<p class="muted">Загружаем рейс…</p>'
+      });
+    }
+    // API не отдаёт сумму в холде и историю заказов (README, расхождение 3),
+    // поэтому показываем то, что можно вычислить: сколько из лимита уже недоступно.
+    const used = round2(t.limitTotal - t.limitLeft);
+    const left = Math.max(0, Math.min(100, (t.limitLeft / t.limitTotal) * 100));
+    return page({
+      title: 'Заправка в рейсе',
+      body: `
+        <section class="card">
+          <div class="muted">Текущий рейс · ${dateRu(t.date)}</div>
+          <div class="route">${esc(t.from)} → ${esc(t.to)}</div>
+          <div class="muted">Тягач ${esc(t.truck)}</div>
+        </section>
+        <section class="card">
+          <div class="muted">Доступно на топливо</div>
+          <div class="limit">${rub(t.limitLeft)}</div>
+          <div class="muted">из ${rub(t.limitTotal)} на весь рейс — туда и обратно</div>
+          <div class="progress"><i style="width:${left}%"></i></div>
+          <div class="row"><span>Потрачено и заблокировано</span><b>${rub(used)}</b></div>
+          <details>
+            <summary>Почему доступно меньше?</summary>
+            <p>Когда вы заказываете заправку, сумма заказа блокируется на лимите — это холд.
+              После заправки спишут только за залитое, остальное вернётся на лимит.
+              Если заправка не состоялась, холд снимут целиком.</p>
+          </details>
+        </section>`,
+      bottom: '<button class="btn" data-act="go" data-arg="stations">Заправиться</button>'
     });
   };
+
+  // ── выбор АЗС ──
+  SCREENS.stations = () => page({
+    title: 'Где заправляемся?',
+    back: 'home',
+    body: '<p class="muted">Экран в работе.</p>'
+  });
 
   // ── запуск ──
   window.addEventListener('online', refresh);
