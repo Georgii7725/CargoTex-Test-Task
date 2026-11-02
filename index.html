@@ -58,6 +58,18 @@
   .tile:disabled{background:var(--bg);color:var(--sub)}
   .nodiesel{color:var(--warn);font-size:15px;font-weight:600}
 
+  /* топливо и объём */
+  .chips{display:grid;gap:8px}
+  .chip{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:60px;padding:10px 16px;border:2px solid var(--line);border-radius:14px;background:#fff;text-align:left}
+  .chip b{font-size:19px}
+  .chip.on,.btn.alt.on{border-color:var(--brand);background:var(--brand-soft)}
+  .stepper{display:grid;grid-template-columns:88px 1fr 88px;align-items:center;gap:8px}
+  .stepper .btn{min-height:64px;font-size:22px}
+  .val{font-size:40px;font-weight:700;text-align:center}
+  .presets{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .presets .btn{padding:8px;font-size:17px}
+  .row b.hl{color:var(--warn)}
+
   /* кнопки: не ниже 56 px, текст на оранжевом — крупный и жирный ради контраста */
   .btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:60px;padding:12px 20px;border:0;border-radius:999px;background:var(--brand);color:#fff;font-size:20px;font-weight:700;text-align:center}
   .btn.alt{min-height:56px;border:2px solid var(--line);background:#fff;color:var(--ink);font-size:18px}

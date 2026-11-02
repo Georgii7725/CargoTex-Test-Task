@@ -300,9 +300,92 @@
   };
 
   // ── топливо и объём ──
-  SCREENS.volume = () => page({
-    title: 'Сколько заливаем?',
-    back: 'pumps',
+  // Объём — в литрах: их принимает API, в них ограничение АЗС, так считает водитель (README, расхождение 6).
+  const pumpName = (st, n) => (lettered(st) ? `${LETTERS[n - 1]} (${n})` : String(n));
+
+  // Сколько можно залить: меньшее из ограничения АЗС и того, на что хватит лимита (README, расхождение 5).
+  function bounds(st, fuel) {
+    const price = st.prices[fuel];
+    const byLimit = Math.floor(S.trip.limitLeft / price);
+    return { price, byLimit, min: st.litersMin, max: Math.min(st.litersMax, byLimit) };
+  }
+  const clamp = (v, b) => Math.max(b.min, Math.min(b.max, v));
+
+  // От остатка лимита зависит максимум, поэтому на этом экране перечитываем рейс.
+  LOADERS.volume = () => fetchFor('volume', async () => {
+    S.trip = await retry('getTrip', []);
+    if (S.draft.liters && station()) S.draft.liters = clamp(S.draft.liters, bounds(station(), S.draft.fuel));
+  });
+
+  SCREENS.volume = () => {
+    const st = station();
+    const d = S.draft;
+    if (!st || !S.trip) return page({ title: 'Сколько заливаем?', back: 'pumps', body: waiting('Загружаем…') });
+    const pump = st.pumps.find((p) => p.number === d.pump);
+    const b = bounds(st, d.fuel);
+    const L = d.liters;
+    const sum = L ? round2(L * b.price) : 0;
+    const byLimit = b.byLimit < st.litersMax;  // что ограничивает сильнее: лимит или АЗС
+    const presets = [b.max, 100, 50].filter((v, i) => i === 0 || (v < b.max && v >= b.min));
+    return page({
+      title: 'Сколько заливаем?',
+      back: 'pumps',
+      body: `
+        <div class="muted"><b>${esc(short(st.name))}</b> · колонка ${pumpName(st, pump.number)}</div>
+        <div class="chips">
+          ${sortFuels(pump.fuels).map((c) => {
+            const own = st.fuels.find((f) => f.code === c).name;  // как топливо называет сеть
+            return `
+              <button class="chip${c === d.fuel ? ' on' : ''}" data-act="fuel" data-arg="${c}">
+                <b>${FUELS[c]}</b>
+                <span class="muted">${own === FUELS[c] ? '' : esc(own) + ' · '}${perL(st.prices[c])}</span>
+              </button>`;
+          }).join('')}
+        </div>
+        ${b.max < b.min
+          ? `<div class="note err">Лимита не хватает даже на ${lit(b.min)}: доступно ${rub(S.trip.limitLeft)}.</div>`
+          : `<div class="stepper">
+               <button class="btn alt" data-act="step" data-arg="-10"${!L || L <= b.min ? ' disabled' : ''} aria-label="Меньше на 10 литров">−10</button>
+               <div class="val">${L ? lit(L) : '—'}</div>
+               <button class="btn alt" data-act="step" data-arg="10"${L >= b.max ? ' disabled' : ''} aria-label="Больше на 10 литров">+10</button>
+             </div>
+             <div class="presets">
+               ${presets.map((v, i) => `<button class="btn alt${v === L ? ' on' : ''}" data-act="liters" data-arg="${v}">${i ? '' : 'Макс. '}${lit(v)}</button>`).join('')}
+             </div>`}
+        <section class="card">
+          <div class="row"><span>АЗС отпускает за раз</span><b${byLimit ? '' : ' class="hl"'}>до ${lit(st.litersMax)}</b></div>
+          <div class="row"><span>Лимита хватит на</span><b${byLimit ? ' class="hl"' : ''}>${lit(b.byLimit)}</b></div>
+          <div class="row"><span>Цена</span><b>${perL(b.price)}</b></div>
+          <div class="row"><span>Сумма</span><b>${L ? rub(sum) : '—'}</b></div>
+          <p class="muted">Спишут по цене в приложении, даже если на табло она на копейку другая.
+            На время заправки сумма заблокируется на лимите, а спишут только за залитое.</p>
+        </section>`,
+      bottom: `<button class="btn" data-act="order"${L ? '' : ' disabled'}>${L ? `Заправить ${lit(L)} · ${rub(sum)}` : 'Выберите объём'}</button>`
+    });
+  };
+
+  ACTIONS.fuel = (code) => {
+    S.draft.fuel = code;
+    if (S.draft.liters) S.draft.liters = clamp(S.draft.liters, bounds(station(), code));
+    save();
+    render();
+  };
+  ACTIONS.step = (delta) => {
+    S.draft.liters = clamp((S.draft.liters || 0) + Number(delta), bounds(station(), S.draft.fuel));
+    save();
+    render();
+  };
+  ACTIONS.liters = (v) => {
+    S.draft.liters = Number(v);
+    save();
+    render();
+  };
+  ACTIONS.order = () => go('sending');
+
+  // ── заказ ──
+  SCREENS.sending = () => page({
+    title: 'Отправляем заказ',
+    back: 'volume',
     body: '<p class="muted">Экран в работе.</p>'
   });
 
