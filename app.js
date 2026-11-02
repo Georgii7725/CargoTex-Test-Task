@@ -216,9 +216,18 @@
     // поэтому показываем то, что можно вычислить: сколько из лимита уже недоступно.
     const used = round2(t.limitTotal - t.limitLeft);
     const left = Math.max(0, Math.min(100, (t.limitLeft / t.limitTotal) * 100));
+    const o = S.order;
+    const f = S.fueling;
+    const holding = f && !isFinal(f);  // холд своего активного заказа показываем отдельной строкой
     return page({
       title: 'Заправка в рейсе',
       body: `
+        ${o ? `
+        <section class="card current">
+          <div class="muted">Текущий заказ</div>
+          <div class="route">${esc(o.what)}</div>
+          <div class="muted">${f ? STATUS[f.status] : 'Ждём ответа АЗС'}</div>
+        </section>` : ''}
         <section class="card">
           <div class="muted">Текущий рейс · ${dateRu(t.date)}</div>
           <div class="route">${esc(t.from)} → ${esc(t.to)}</div>
@@ -229,7 +238,8 @@
           <div class="limit">${rub(t.limitLeft)}</div>
           <div class="muted">из ${rub(t.limitTotal)} на весь рейс — туда и обратно</div>
           <div class="progress"><i style="width:${left}%"></i></div>
-          <div class="row"><span>Потрачено и заблокировано</span><b>${rub(used)}</b></div>
+          ${row('Потрачено и заблокировано', rub(used))}
+          ${holding ? row('Из них в холде сейчас', rub(f.amountHeld)) : ''}
           <details>
             <summary>Почему доступно меньше?</summary>
             <p>Когда вы заказываете заправку, сумма заказа блокируется на лимите — это холд.
@@ -237,9 +247,14 @@
               Если заправка не состоялась, холд снимут целиком.</p>
           </details>
         </section>`,
-      bottom: '<button class="btn" data-act="go" data-arg="stations">Заправиться</button>'
+      // Пока есть незакрытый заказ, новый не начинаем — только возвращаемся к нему (README, расхождение 14).
+      bottom: o
+        ? '<button class="btn" data-act="toOrder">К текущему заказу</button>'
+        : '<button class="btn" data-act="go" data-arg="stations">Заправиться</button>'
     });
   };
+
+  ACTIONS.toOrder = () => go(!S.order.id ? 'sending' : isFinal(S.fueling) ? 'result' : 'fueling');
 
   // ── выбор АЗС ──
   // Расстояние в км: на десятках километров хватает плоского приближения.
@@ -474,6 +489,8 @@
     S.order.id = f.id;
     S.mine = (S.mine || []).concat(f.id).slice(-20);  // свои заказы: getActiveFueling видит только последний
     S.fueling = f;
+    // Сервер уже заблокировал сумму заказа: показываем это сразу, не дожидаясь нового getTrip.
+    if (S.trip && S.tripAt < f.createdAt) S.trip.limitLeft = round2(S.trip.limitLeft - f.amountHeld);
     save();
     if (cancel && cancellable(f)) return cancelNow();  // водитель отменил, пока не было связи
     if (isFinal(f)) return go('result');
@@ -560,6 +577,13 @@
   // Отменить можно только до начала налива: так работает API (README, расхождение 8).
   const cancellable = (f) => f.status === 'accepted' || f.status === 'waiting_nozzle';
   const CANT_CANCEL = 'Налив уже начался — отменить нельзя. Чтобы остановить, повесьте пистолет: спишут только за залитое.';
+  const STATUS = {
+    accepted: 'АЗС подтверждает заказ',
+    waiting_nozzle: 'Колонка ждёт пистолет',
+    fueling: 'Идёт налив',
+    completed: 'Заправка завершена',
+    cancelled: 'Заказ отменён'
+  };
 
   // Колонка ждёт пистолет: со слов диспетчера «секунд сорок», в API — до 60 с (README, расхождение 9).
   // Отсчёт ведём от меньшего: лучше поторопить водителя, чем дать колонке выключиться.
@@ -603,7 +627,8 @@
     const f = S.fueling;
     if (isFinal(f)) return go('result');
     // Перерисовываем, только если что-то изменилось: иначе кнопки пересоздавались бы под пальцем.
-    if (ui.screen === 'fueling' && (f.status !== was.status || f.currentLiters !== was.currentLiters)) render();
+    const changed = f.status !== was.status || f.currentLiters !== was.currentLiters;
+    if (changed && (ui.screen === 'fueling' || ui.screen === 'home')) render();
     pollTimer = setTimeout(poll, pollAgain ? 0 : Math.min(10000, 1500 * 2 ** pollFails));
     pollAgain = false;
   };
@@ -783,8 +808,33 @@
   }
 
   // ── запуск ──
+  // Продолжаем с того места, где остановились: перезагрузка, разряженный телефон
+  // или обрыв связи не должны терять заказ и не должны создавать второй.
+  function boot() {
+    const o = S.order;
+    if (o && !o.id) return go('sending');  // ответ на заказ не дошёл: дошлём с тем же clientRequestId
+    if (o && S.fueling) return go(isFinal(S.fueling) ? 'result' : 'fueling');
+    go('home');
+    adopt();
+  }
+
+  // Сервер может знать о незавершённом заказе, которого нет в телефоне (данные стёрлись,
+  // заказ сделан с другого телефона). Показываем его — тогда водитель не закажет второй.
+  async function adopt() {
+    try {
+      const f = await retry('getActiveFueling', []);
+      if (!f || S.order) return;
+      S.order = { id: f.id, at: f.createdAt, what: f.stationName, fuelName: f.fuelName };
+      S.fueling = f;
+      save();
+      go('fueling', { kind: 'warn', text: 'Нашёлся незавершённый заказ — продолжаем следить за ним.' });
+    } catch (e) {
+      /* без связи — проверим при следующем запуске */
+    }
+  }
+
   window.addEventListener('online', refresh);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   if (/[?&]debug/.test(location.search)) mountDebug();
-  go('home');
+  boot();
 })();
