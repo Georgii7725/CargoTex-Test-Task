@@ -47,7 +47,9 @@
     screen: 'home',
     online: true,
     error: null,    // ошибка загрузки данных экрана
-    notice: null    // подсказка вверху экрана: { kind: 'warn' | 'err', text }
+    notice: null,   // подсказка вверху экрана: { kind: 'warn' | 'err', text }
+    busy: false,    // идёт действие с запросом (отмена): кнопки неактивны
+    confirm: false  // открыт вопрос «Отменить заказ?»
   };
 
   // ── связь ──
@@ -126,6 +128,7 @@
     ui.screen = screen;
     ui.error = null;
     ui.notice = notice || null;
+    ui.confirm = false;
     render();
     window.scrollTo(0, 0);
     refresh();
@@ -180,6 +183,19 @@
   });
   ACTIONS.go = go;
   ACTIONS.retry = () => { ui.error = null; render(); refresh(); };
+
+  // Действие с запросом к серверу: пока оно идёт, кнопки неактивны, повторные нажатия ничего не делают.
+  async function once(fn) {
+    if (ui.busy) return;
+    ui.busy = true;
+    render();
+    try {
+      await fn();
+    } finally {
+      ui.busy = false;
+      render();
+    }
+  }
 
   // ── главный экран ──
   LOADERS.home = () => fetchFor('home', async () => {
@@ -421,11 +437,15 @@
     go('sending');  // экран с кнопкой исчезает сразу: второму нажатию некуда попасть
   };
 
+  // Заказ, который не подтвердился за 3 минуты, сам не отправляем: водитель мог уже уехать от колонки.
+  const STALE = 3 * 60 * 1000;
+  const stale = (o) => !o.cancel && Date.now() - o.at > STALE;
+
   // Отправка. Повторяем только при потере связи и всегда с тем же clientRequestId.
   let sending = false;
   LOADERS.sending = async function send() {
     const o = S.order;
-    if (sending || !o || o.id) return;
+    if (sending || !o || o.id || stale(o)) return;
     sending = true;
     ui.error = null;
     render();
@@ -440,11 +460,14 @@
   };
 
   function accept(f) {
+    const cancel = S.order.cancel;
     S.order.id = f.id;
     S.mine = (S.mine || []).concat(f.id).slice(-20);  // свои заказы: getActiveFueling видит только последний
     S.fueling = f;
     save();
-    go('fueling');
+    if (cancel && cancellable(f)) return cancelNow();  // водитель отменил, пока не было связи
+    if (isFinal(f)) return go('result');
+    go('fueling', cancel ? { kind: 'warn', text: CANT_CANCEL } : null);
   }
 
   // Сервер отказал. Возвращаем водителя туда, где это можно исправить, и объясняем, что случилось.
@@ -480,6 +503,21 @@
   SCREENS.sending = () => {
     const o = S.order;
     if (!o) return page({ title: 'Заказ', body: '<p class="muted">Активного заказа нет.</p>', bottom: homeButton });
+    let text;
+    let bottom;
+    if (o.cancel) {
+      text = '<div class="note warn">Отменяем. Как только будет связь, проверим заказ и снимем его, если он успел дойти до АЗС.</div>';
+      bottom = homeButton;
+    } else if (stale(o)) {
+      text = `<div class="note warn">Заказ от ${time(o.at)} так и не подтвердился. Вы всё ещё у колонки?</div>`;
+      bottom = '<button class="btn" data-act="resend">Да, отправить</button><button class="btn danger" data-act="drop">Нет, отменить заказ</button>';
+    } else {
+      text = ui.error
+        ? '<div class="note warn">Нет связи. Заказ сохранён и уйдёт один раз, как только связь вернётся. Нажимать ещё раз не нужно.</div>'
+        : '<p class="muted">Отправляем на АЗС… Заказ уйдёт один раз, даже если связь моргнёт.</p>';
+      bottom = (ui.error ? '<button class="btn" data-act="retry">Проверить сейчас</button>' : '') +
+        '<button class="btn danger" data-act="drop">Отменить заказ</button>' + homeButton;
+    }
     return page({
       title: 'Отправляем заказ',
       body: `
@@ -488,15 +526,30 @@
           <div class="route">${o.fuelName} · ${lit(o.req.liters)}</div>
           <div class="muted">${rub(round2(o.req.liters * o.req.price))} по ${perL(o.req.price)}</div>
         </section>
-        ${ui.error
-          ? '<div class="note warn">Нет связи. Заказ сохранён и уйдёт один раз, как только связь вернётся. Нажимать ещё раз не нужно.</div>'
-          : '<p class="muted">Отправляем на АЗС… Заказ уйдёт один раз, даже если связь моргнёт.</p>'}`,
-      bottom: (ui.error ? '<button class="btn" data-act="retry">Проверить сейчас</button>' : '') + homeButton
+        ${text}`,
+      bottom
     });
+  };
+
+  ACTIONS.resend = () => {
+    S.order.at = Date.now();
+    save();
+    refresh();
+  };
+  // Дошёл ли заказ до сервера, неизвестно. Поэтому не гадаем: отправляем его с тем же
+  // clientRequestId — сервер вернёт уже созданный или создаст — и сразу снимаем (см. accept).
+  ACTIONS.drop = () => {
+    S.order.cancel = true;
+    save();
+    render();
+    refresh();
   };
 
   // ── заправка ──
   const isFinal = (f) => f.status === 'completed' || f.status === 'cancelled';
+  // Отменить можно только до начала налива: так работает API (README, расхождение 8).
+  const cancellable = (f) => f.status === 'accepted' || f.status === 'waiting_nozzle';
+  const CANT_CANCEL = 'Налив уже начался — отменить нельзя. Чтобы остановить, повесьте пистолет: спишут только за залитое.';
 
   // Колонка ждёт пистолет: со слов диспетчера «секунд сорок», в API — до 60 с (README, расхождение 9).
   // Отсчёт ведём от меньшего: лучше поторопить водителя, чем дать колонке выключиться.
@@ -567,7 +620,17 @@
           <p class="muted">из ${lit(f.liters)} · примерно ${rub(round2(f.currentLiters * f.price))}</p>
           <div class="progress"><i style="width:${Math.min(100, (f.currentLiters / f.liters) * 100)}%"></i></div>
         </div>
-        <div class="note warn">Отменить уже нельзя. Чтобы остановить налив, повесьте пистолет — спишут только за залитое.</div>`;
+        ${ui.notice ? '' : '<div class="note warn">Отменить уже нельзя. Чтобы остановить налив, повесьте пистолет — спишут только за залитое.</div>'}`;
+    }
+    const off = ui.busy ? ' disabled' : '';
+    let bottom = homeButton;
+    if (cancellable(f) && ui.confirm) {
+      bottom = `
+        <div class="confirm"><b>Отменить заказ?</b> Колонка выключится, ${rub(f.amountHeld)} вернутся на лимит.</div>
+        <button class="btn danger" data-act="cancelYes"${off}>${ui.busy ? 'Отменяем…' : 'Да, отменить'}</button>
+        <button class="btn alt" data-act="cancelNo"${off}>Нет, продолжить заправку</button>`;
+    } else if (cancellable(f)) {
+      bottom = `<button class="btn danger" data-act="cancelAsk"${off}>Отменить заказ</button>` + homeButton;
     }
     return page({
       title: 'Заправка',
@@ -578,9 +641,33 @@
           <div class="muted">Заблокировано на лимите ${rub(f.amountHeld)} — спишут только за залитое.</div>
         </section>
         ${state}`,
-      bottom: homeButton
+      bottom
     });
   };
+
+  ACTIONS.cancelAsk = () => { ui.confirm = true; render(); };
+  ACTIONS.cancelNo = () => { ui.confirm = false; render(); };
+  ACTIONS.cancelYes = () => once(async () => {
+    ui.confirm = false;
+    await cancelNow();
+  });
+
+  async function cancelNow() {
+    try {
+      S.fueling = await retry('cancelFueling', [S.fueling.id], 4);
+    } catch (e) {
+      if (e.code === 'CANNOT_CANCEL') {
+        // Пока шёл запрос, налив начался или заказ завершился: узнаём, как на самом деле.
+        try { S.fueling = await retry('getFueling', [S.fueling.id]); } catch (e2) { /* покажем последнее известное */ }
+        ui.notice = { kind: 'warn', text: CANT_CANCEL };
+      } else {
+        ui.notice = { kind: 'err', text: 'Отмена не дошла: ' + esc(errText(e)) + '. Попробуйте ещё раз.' };
+      }
+    }
+    save();
+    if (isFinal(S.fueling)) go('result');
+    else if (ui.screen !== 'fueling') go('fueling', ui.notice);
+  }
 
   // ── итог ──
   SCREENS.result = () => page({
