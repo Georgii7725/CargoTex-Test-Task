@@ -30,10 +30,12 @@
     trip: null,  // последний ответ getTrip: показываем его, пока нет связи
     syncAt: 0    // когда в последний раз получили ответ сервера
   }, load());
+  let frozen = false;  // после «Сбросить всё» ничего не сохраняем
   function load() {
     try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; }
   }
   function save() {
+    if (frozen) return;
     try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* без хранилища работаем в памяти */ }
   }
 
@@ -196,8 +198,43 @@
     body: '<p class="muted">Экран в работе.</p>'
   });
 
+  // ── отладочная панель: index.html?debug ──
+  // Для показа: выключить связь посреди заправки, убрать случайные сбои API, начать сначала.
+  function mountDebug() {
+    const bar = document.createElement('div');
+    bar.id = 'dbg';
+    document.body.prepend(bar);
+    // «Связь: нет» переживает перезагрузку вкладки — чтобы показать запуск без связи.
+    debug.offline = sessionStorage.getItem('dbg.offline') === '1';
+    if (debug.offline) setOnline(false);
+    const draw = () => {
+      bar.innerHTML = `<b>Отладка</b>
+        <button data-d="net">Связь: ${debug.offline ? 'нет' : 'есть'}</button>
+        <button data-d="err">Сбои API: ${api.config.networkErrors ? 'вкл' : 'выкл'}</button>
+        <button data-d="reset">Сбросить всё</button>`;
+    };
+    bar.addEventListener('click', (e) => {
+      const d = e.target.dataset.d;
+      if (d === 'net') {
+        debug.offline = !debug.offline;
+        sessionStorage.setItem('dbg.offline', debug.offline ? '1' : '');
+        if (debug.offline) setOnline(false); else refresh();
+      }
+      if (d === 'err') api.config.networkErrors = !api.config.networkErrors;
+      if (d === 'reset') {
+        frozen = true;
+        api.reset();
+        localStorage.removeItem(KEY);
+        location.reload();
+      }
+      draw();
+    });
+    draw();
+  }
+
   // ── запуск ──
   window.addEventListener('online', refresh);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  if (/[?&]debug/.test(location.search)) mountDebug();
   go('home');
 })();
