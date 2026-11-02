@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ff6200">
+<title>Заправка в рейсе</title>
+<style>
+  /* Цвета — из макета. Размеры крупнее макета: водитель в перчатках, телефон недорогой (см. README, расхождение 19). */
+  :root{--brand:#ff6200;--brand-soft:#fff0e6;--ink:#111;--sub:#5b6472;--bg:#f3f4f6;--line:#e3e6eb;--ok:#15803d;--ok-soft:#e8f7ee;--warn:#9a3412;--warn-soft:#fff4e5;--err:#b91c1c;--err-soft:#fdecec}
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:#e9ebef;color:var(--ink);font:17px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  button{font-family:inherit;color:inherit;cursor:pointer}
+  #dbg,#net,#app{max-width:480px;margin:0 auto}
+  #app{min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;background:#fff}
+
+  /* плашка «нет связи» и отладочная панель */
+  #net{position:sticky;top:0;z-index:5;padding:12px 16px;background:#1f2937;color:#fff;font-size:16px}
+  #dbg{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 8px;background:#fef3c7;font-size:13px}
+  #dbg button{padding:6px 10px;border:1px solid #d6c27a;border-radius:8px;background:#fff;font-size:13px}
+
+  /* каркас экрана: заголовок, содержимое, кнопки внизу */
+  .top{display:flex;align-items:center;gap:4px;padding:16px 16px 4px}
+  h1{margin:0;font-size:26px;line-height:1.2}
+  .back{flex:none;width:56px;height:56px;margin-left:-12px;border:0;background:none;font-size:30px}
+  .body{flex:1;display:flex;flex-direction:column;gap:12px;padding:8px 16px 16px}
+  .bar{position:sticky;bottom:0;display:grid;gap:8px;padding:12px 16px calc(16px + env(safe-area-inset-bottom));background:#fff;border-top:1px solid var(--line)}
+
+  /* карточки и текст */
+  .card{padding:16px;border-radius:16px;background:var(--bg)}
+  .muted{color:var(--sub);font-size:16px}
+  .route{margin:4px 0;font-size:22px;font-weight:600}
+  .limit{margin-top:4px;font-size:40px;font-weight:700;line-height:1.1;letter-spacing:-.5px}
+  .progress{height:8px;margin:12px 0 4px;border-radius:4px;background:#dfe3e8;overflow:hidden}
+  .progress i{display:block;height:100%;background:var(--brand)}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:8px 0}
+  .row span{color:var(--sub)}
+  details p{margin:0 0 4px;color:var(--sub);font-size:16px}
+  summary{display:flex;align-items:center;min-height:48px;color:var(--brand);font-weight:600;cursor:pointer}
+  .note{padding:12px 14px;border-radius:12px;font-size:16px}
+  .note.ok{background:var(--ok-soft);color:var(--ok)}
+  .note.warn{background:var(--warn-soft);color:var(--warn)}
+  .note.err{background:var(--err-soft);color:var(--err)}
+
+  /* кнопки: не ниже 56 px, текст на оранжевом — крупный и жирный ради контраста */
+  .btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:60px;padding:12px 20px;border:0;border-radius:999px;background:var(--brand);color:#fff;font-size:20px;font-weight:700;text-align:center}
+  .btn.alt{min-height:56px;border:2px solid var(--line);background:#fff;color:var(--ink);font-size:18px}
+  .btn.danger{min-height:56px;border:2px solid var(--err);background:#fff;color:var(--err);font-size:18px}
+  .btn:disabled{opacity:.45;cursor:default}
+</style>
+</head>
+<body>
+<div id="net" role="status" aria-live="polite" hidden></div>
+<div id="app"></div>
+<noscript>Для работы приложения нужен JavaScript.</noscript>
+<script src="fake-api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
