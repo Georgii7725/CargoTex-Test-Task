@@ -44,6 +44,12 @@
   .note.warn{background:var(--warn-soft);color:var(--warn)}
   .note.err{background:var(--err-soft);color:var(--err)}
 
+  /* список АЗС: строка целиком — кнопка */
+  .st{display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:baseline;width:100%;min-height:76px;padding:14px 16px;border:0;border-radius:16px;background:var(--bg);text-align:left}
+  .st b{font-size:18px}
+  .st b+b,.st span+span{text-align:right;white-space:nowrap}
+  .badge{grid-column:1/-1;justify-self:start;margin-top:6px;padding:2px 10px;border-radius:999px;background:var(--ok-soft);color:var(--ok);font-size:15px;font-weight:600}
+
   /* кнопки: не ниже 56 px, текст на оранжевом — крупный и жирный ради контраста */
   .btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:60px;padding:12px 20px;border:0;border-radius:999px;background:var(--brand);color:#fff;font-size:20px;font-weight:700;text-align:center}
   .btn.alt{min-height:56px;border:2px solid var(--line);background:#fff;color:var(--ink);font-size:18px}

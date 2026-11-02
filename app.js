@@ -19,6 +19,8 @@
   const round2 = (n) => Math.round(n * 100) / 100;
   const num = (n, digits) => n.toLocaleString('ru-RU', { minimumFractionDigits: digits, maximumFractionDigits: 2 });
   const rub = (n) => num(n, n % 1 ? 2 : 0) + ' ₽';
+  const lit = (n) => num(n, 0) + ' л';
+  const perL = (n) => num(n, 2) + ' ₽/л';
   const time = (ts) => new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
   const dateRu = (iso) => { const [, m, d] = iso.split('-'); return Number(d) + ' ' + MONTHS[m - 1]; };
@@ -93,7 +95,8 @@
   }
 
   const ERRORS = {
-    NETWORK_ERROR: 'нет связи'
+    NETWORK_ERROR: 'нет связи',
+    STATION_NOT_FOUND: 'АЗС не найдена'
   };
   const errText = (e) => ERRORS[e.code] || e.message;
 
@@ -128,40 +131,47 @@
       ${bottom ? `<footer class="bar">${bottom}</footer>` : ''}`;
   }
 
+  // Пока данных нет: «загружаем…» или ошибка с кнопкой повтора.
+  function waiting(text) {
+    return ui.error
+      ? `<div class="note err">Не получилось: ${esc(errText(ui.error))}.</div>
+         <button class="btn alt" data-act="retry">Повторить</button>`
+      : `<p class="muted">${text}</p>`;
+  }
+
+  // Загрузка данных экрана: одна за раз, ошибка попадает в ui.error,
+  // после загрузки перерисовываем — если водитель всё ещё на этом экране.
+  const loading = {};
+  async function fetchFor(screen, fn) {
+    if (loading[screen]) return;
+    loading[screen] = true;
+    try {
+      await fn();
+      ui.error = null;
+      save();
+    } catch (e) {
+      ui.error = e;
+    }
+    loading[screen] = false;
+    if (ui.screen === screen) render();
+  }
+
   // Одна подписка на все кнопки: data-act — имя действия, data-arg — его аргумент.
   $app.addEventListener('click', (e) => {
     const el = e.target.closest('[data-act]');
     if (el && !el.disabled) ACTIONS[el.dataset.act](el.dataset.arg);
   });
   ACTIONS.go = go;
+  ACTIONS.retry = () => { ui.error = null; render(); refresh(); };
 
   // ── главный экран ──
-  let tripLoading = false;
-  LOADERS.home = async function () {
-    if (tripLoading) return;
-    tripLoading = true;
-    try {
-      S.trip = await retry('getTrip', []);
-      ui.error = null;
-      save();
-    } catch (e) {
-      ui.error = e;
-    }
-    tripLoading = false;
-    if (ui.screen === 'home') render();
-  };
+  LOADERS.home = () => fetchFor('home', async () => {
+    S.trip = await retry('getTrip', []);
+  });
 
   SCREENS.home = () => {
     const t = S.trip;
-    if (!t) {
-      return page({
-        title: 'Заправка в рейсе',
-        body: ui.error
-          ? `<div class="note err">Не удалось загрузить рейс: ${esc(errText(ui.error))}.</div>
-             <button class="btn alt" data-act="go" data-arg="home">Повторить</button>`
-          : '<p class="muted">Загружаем рейс…</p>'
-      });
-    }
+    if (!t) return page({ title: 'Заправка в рейсе', body: waiting('Загружаем рейс…') });
     // API не отдаёт сумму в холде и историю заказов (README, расхождение 3),
     // поэтому показываем то, что можно вычислить: сколько из лимита уже недоступно.
     const used = round2(t.limitTotal - t.limitLeft);
@@ -192,9 +202,55 @@
   };
 
   // ── выбор АЗС ──
-  SCREENS.stations = () => page({
-    title: 'Где заправляемся?',
-    back: 'home',
+  // Расстояние в км: на десятках километров хватает плоского приближения.
+  const km = (a, b) => Math.hypot((a.lat - b.lat) * 111, (a.lon - b.lon) * 111 * Math.cos(a.lat * Math.PI / 180));
+  // «Колесо АЗС №516 (трасса М-7, 154 км)» → «Колесо №516»: трасса и километр и так есть в адресе.
+  const short = (name) => name.replace(' АЗС', '').replace(/\s*\(.*\)$/, '');
+
+  // АЗС не выбираем сами по координатам: по API водитель в 8 км от ближайшей,
+  // хотя говорит, что уже стоит на ней (README, расхождение 11). Показываем ближайшие сверху.
+  LOADERS.stations = () => fetchFor('stations', async () => {
+    if (!S.me) S.me = await retry('getDriverLocation', []);
+    const all = await retry('getStations', []);
+    S.near = all
+      .filter((s) => s.prices.diesel)
+      .map((s) => Object.assign({}, s, { km: km(S.me, s) }))
+      .filter((s) => s.km <= 60)
+      .sort((a, b) => a.km - b.km)
+      .slice(0, 15);
+    S.nearAt = Date.now();
+  });
+
+  SCREENS.stations = () => {
+    const list = S.near;
+    if (!list) return page({ title: 'Где заправляемся?', back: 'home', body: waiting('Ищем АЗС рядом…') });
+    const cheapest = Math.min(...list.map((s) => s.prices.diesel));
+    return page({
+      title: 'Где заправляемся?',
+      back: 'home',
+      body: `
+        <p class="muted">АЗС сервиса рядом, ближайшие сверху. Цена — за литр дизеля${ui.online ? '' : ', на ' + time(S.nearAt)}.</p>
+        ${list.map((s) => `
+          <button class="st" data-act="station" data-arg="${s.id}">
+            <b>${esc(short(s.name))}</b>
+            <b>${perL(s.prices.diesel)}</b>
+            <span class="muted">${esc(s.address).replace(/ км/g, '&nbsp;км')}</span>
+            <span class="muted">${num(Math.round(s.km * 10) / 10, 0)}&nbsp;км</span>
+            ${s.prices.diesel === cheapest ? '<span class="badge">дешевле всех рядом</span>' : ''}
+          </button>`).join('')}`
+    });
+  };
+
+  ACTIONS.station = (id) => {
+    S.draft = { stationId: id };
+    save();
+    go('pumps');
+  };
+
+  // ── выбор колонки ──
+  SCREENS.pumps = () => page({
+    title: 'У какой колонки стоите?',
+    back: 'stations',
     body: '<p class="muted">Экран в работе.</p>'
   });
 
