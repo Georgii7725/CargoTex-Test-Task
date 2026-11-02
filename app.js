@@ -355,6 +355,7 @@
     // Иначе — дизель, если он есть на колонке (он первый в FUELS), а объём выбирает водитель.
     if (!p.fuels.includes(S.draft.fuel)) S.draft.fuel = sortFuels(p.fuels)[0];
     S.draft.liters = S.draft.liters || null;
+    if (S.draft.liters && S.trip) S.draft.liters = clamp(S.draft.liters, bounds(station(), S.draft.fuel));
     save();
     go('volume');
   };
@@ -514,13 +515,19 @@
     sending = true;
     ui.error = null;
     render();
+    let f = null;
+    let err = null;
     try {
-      accept(await retry('startFueling', [o.req], 4));
+      f = await retry('startFueling', [o.req], 4);
     } catch (e) {
-      if (e.code === NET) ui.error = e;  // заказ остаётся сохранённым: дошлём, когда связь вернётся
-      else rejected(e);                  // сервер отказал: заказа нет, холда нет
+      err = e;
+    } finally {
+      sending = false;
     }
-    sending = false;
+    // Отказом считаем только ошибку самого запроса: принятый сервером заказ терять нельзя.
+    if (f) return accept(f);
+    if (err.code !== NET) return rejected(err);  // сервер отказал: заказа нет, холда нет
+    ui.error = err;                              // заказ остаётся сохранённым: дошлём, когда связь вернётся
     if (ui.screen === 'sending') render();
   };
 
@@ -543,6 +550,7 @@
     S.order = null;
     save();
     const st = station();
+    if (!st) return go('home', { kind: 'err', text: 'Заказ не принят: ' + esc(errText(e)) + '.' });
     const d = e.details || {};
     const fixLiters = () => { if (S.draft.liters) S.draft.liters = clamp(S.draft.liters, bounds(st, S.draft.fuel)); };
     if (e.code === 'PRICE_CHANGED') {
