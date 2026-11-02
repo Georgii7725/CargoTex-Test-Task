@@ -534,7 +534,6 @@
   function accept(f) {
     const cancel = S.order.cancel;
     S.order.id = f.id;
-    S.mine = (S.mine || []).concat(f.id).slice(-20);  // свои заказы: getActiveFueling видит только последний
     S.fueling = f;
     // Сервер уже заблокировал сумму заказа: показываем это сразу, не дожидаясь нового getTrip.
     if (S.trip && S.tripAt < f.createdAt) S.trip.limitLeft = round2(S.trip.limitLeft - f.amountHeld);
