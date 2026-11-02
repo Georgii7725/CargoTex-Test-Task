@@ -206,6 +206,7 @@
   const km = (a, b) => Math.hypot((a.lat - b.lat) * 111, (a.lon - b.lon) * 111 * Math.cos(a.lat * Math.PI / 180));
   // «Колесо АЗС №516 (трасса М-7, 154 км)» → «Колесо №516»: трасса и километр и так есть в адресе.
   const short = (name) => name.replace(' АЗС', '').replace(/\s*\(.*\)$/, '');
+  const addr = (s) => esc(s.address).replace(/ км/g, '&nbsp;км');
 
   // АЗС не выбираем сами по координатам: по API водитель в 8 км от ближайшей,
   // хотя говорит, что уже стоит на ней (README, расхождение 11). Показываем ближайшие сверху.
@@ -234,7 +235,7 @@
           <button class="st" data-act="station" data-arg="${s.id}">
             <b>${esc(short(s.name))}</b>
             <b>${perL(s.prices.diesel)}</b>
-            <span class="muted">${esc(s.address).replace(/ км/g, '&nbsp;км')}</span>
+            <span class="muted">${addr(s)}</span>
             <span class="muted">${num(Math.round(s.km * 10) / 10, 0)}&nbsp;км</span>
             ${s.prices.diesel === cheapest ? '<span class="badge">дешевле всех рядом</span>' : ''}
           </button>`).join('')}`
@@ -248,9 +249,60 @@
   };
 
   // ── выбор колонки ──
-  SCREENS.pumps = () => page({
-    title: 'У какой колонки стоите?',
-    back: 'stations',
+  // Топливо называем одинаково для всех сетей, а название сети — мелко рядом (README, расхождение 16).
+  const FUELS = {
+    diesel: 'Дизель', diesel_premium: 'Дизель премиум', diesel_winter: 'Дизель зимний',
+    ai92: 'АИ-92', ai95: 'АИ-95', ai100: 'АИ-100', propane: 'Пропан'
+  };
+  const sortFuels = (codes) => Object.keys(FUELS).filter((c) => codes.includes(c));
+  // На «Колесе» колонки подписаны буквами, а API ждёт номер (README, расхождение 7).
+  const LETTERS = 'АБВГДЕЖЗИК';
+  const lettered = (st) => st.brand === 'Колесо';
+
+  // Свежие данные АЗС при каждом входе: колонки и цены могли измениться.
+  LOADERS.pumps = () => fetchFor('pumps', async () => {
+    S.station = await retry('getStation', [S.draft.stationId]);
+  });
+  const station = () => (S.station && S.station.id === S.draft.stationId ? S.station : null);
+
+  SCREENS.pumps = () => {
+    const st = station();
+    if (!st) return page({ title: 'У какой колонки стоите?', back: 'stations', body: waiting('Загружаем колонки…') });
+    return page({
+      title: 'У какой колонки стоите?',
+      back: 'stations',
+      body: `
+        <div class="muted"><b>${esc(short(st.name))}</b> · ${addr(st)}</div>
+        ${lettered(st) ? '<div class="note warn">На «Колесе» колонки подписаны буквами: А — первая, Б — вторая и так далее.</div>' : ''}
+        <div class="tiles">
+          ${st.pumps.map((p) => {
+            const free = p.status === 'free';
+            const state = free ? sortFuels(p.fuels).map((c) => FUELS[c]).join(' · ') : p.status === 'busy' ? 'занята' : 'не работает';
+            return `
+              <button class="tile" data-act="pump" data-arg="${p.number}"${free ? '' : ' disabled'}>
+                <span class="big">${lettered(st) ? LETTERS[p.number - 1] : p.number}</span>
+                ${lettered(st) ? `<span class="muted">колонка ${p.number}</span>` : ''}
+                <span class="fuels">${state}</span>
+                ${free && !p.fuels.includes('diesel') ? '<span class="nodiesel">нет дизеля</span>' : ''}
+              </button>`;
+          }).join('')}
+        </div>`
+    });
+  };
+
+  ACTIONS.pump = (n) => {
+    const p = station().pumps.find((x) => x.number === Number(n));
+    S.draft.pump = p.number;
+    S.draft.fuel = sortFuels(p.fuels)[0];  // дизель, если он есть на колонке: он идёт первым в FUELS
+    S.draft.liters = null;
+    save();
+    go('volume');
+  };
+
+  // ── топливо и объём ──
+  SCREENS.volume = () => page({
+    title: 'Сколько заливаем?',
+    back: 'pumps',
     body: '<p class="muted">Экран в работе.</p>'
   });
 
