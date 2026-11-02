@@ -197,10 +197,17 @@
     }
   }
 
-  // ── главный экран ──
-  LOADERS.home = () => fetchFor('home', async () => {
+  // Строка «подпись — значение» в карточках.
+  const row = (label, value, cls) => `<div class="row"><span>${label}</span><b${cls ? ` class="${cls}"` : ''}>${value}</b></div>`;
+
+  // Рейс и остаток лимита. tripAt — когда получили: по нему видно, свежий ли остаток.
+  async function loadTrip() {
     S.trip = await retry('getTrip', []);
-  });
+    S.tripAt = Date.now();
+  }
+
+  // ── главный экран ──
+  LOADERS.home = () => fetchFor('home', loadTrip);
 
   SCREENS.home = () => {
     const t = S.trip;
@@ -345,9 +352,11 @@
   const clamp = (v, b) => Math.max(b.min, Math.min(b.max, v));
 
   // От остатка лимита зависит максимум, поэтому на этом экране перечитываем рейс.
+  // АЗС подгружаем, если пришли сюда не через выбор колонки («Заказать снова», рефрижератор).
   LOADERS.volume = () => fetchFor('volume', async () => {
-    S.trip = await retry('getTrip', []);
-    if (S.draft.liters && station()) S.draft.liters = clamp(S.draft.liters, bounds(station(), S.draft.fuel));
+    if (!station()) S.station = await retry('getStation', [S.draft.stationId]);
+    await loadTrip();
+    if (S.draft.liters) S.draft.liters = clamp(S.draft.liters, bounds(station(), S.draft.fuel));
   });
 
   SCREENS.volume = () => {
@@ -361,9 +370,10 @@
     const byLimit = b.byLimit < st.litersMax;  // что ограничивает сильнее: лимит или АЗС
     const presets = [b.max, 100, 50].filter((v, i) => i === 0 || (v < b.max && v >= b.min));
     return page({
-      title: 'Сколько заливаем?',
+      title: d.reefer ? 'Бак рефрижератора' : 'Сколько заливаем?',
       back: 'pumps',
       body: `
+        ${d.reefer ? '<div class="note info">Второй заказ — для бака рефрижератора. Лимит общий с тягачом.</div>' : ''}
         <div class="muted"><b>${esc(short(st.name))}</b> · колонка ${pumpName(st, pump.number)}</div>
         <div class="chips">
           ${sortFuels(pump.fuels).map((c) => {
@@ -429,7 +439,7 @@
     S.order = {
       req: { stationId: st.id, pump: d.pump, fuel: d.fuel, liters: d.liters, price: st.prices[d.fuel], clientRequestId: newRequestId() },
       at: Date.now(),
-      what: `${short(st.name)} · колонка ${pumpName(st, d.pump)}`,
+      what: `${short(st.name)} · колонка ${pumpName(st, d.pump)}${d.reefer ? ' · рефрижератор' : ''}`,
       fuelName: FUELS[d.fuel],
       limitBefore: S.trip.limitLeft  // чтобы на итоге проверить, вернулся ли холд
     };
@@ -670,16 +680,72 @@
   }
 
   // ── итог ──
-  SCREENS.result = () => page({
-    title: 'Итог',
-    body: `<p class="muted">${esc(S.fueling.status)} ${esc(S.fueling.reason || '')}. Экран в работе.</p>`,
-    bottom: '<button class="btn" data-act="done">На главную</button>'
-  });
-  ACTIONS.done = () => {
+  // Свой итог для каждого исхода: в макете был только успех (README, расхождение 10).
+  const REASONS = {
+    DRIVER_CANCELLED: ['Заказ отменён', 'Вы отменили заказ до начала налива. Деньги не списаны.'],
+    PUMP_TIMEOUT: ['Колонка не дождалась пистолета', 'Колонка выключилась: пистолет нужно вставить сразу, как она включится. Деньги не списаны.'],
+    STATION_NO_RESPONSE: ['АЗС не ответила', 'Заказ не дошёл до колонки. Деньги не списаны — попробуйте ещё раз или выберите другую колонку.']
+  };
+
+  // Остаток лимита после заказа берём с сервера: так видно, вернулся ли холд на самом деле
+  // (по API — сразу, со слов диспетчера — «к утру», README, расхождение 4).
+  LOADERS.result = () => fetchFor('result', loadTrip);
+
+  SCREENS.result = () => {
+    const f = S.fueling;
+    const o = S.order || {};
+    const done = f.status === 'completed';
+    const spent = done ? f.factAmount : 0;
+    const back = round2(f.amountHeld - spent);       // столько должно вернуться на лимит
+    const fresh = S.trip && S.tripAt > f.updatedAt;  // остаток получен уже после окончания заказа
+    // Остаток меньше ожидаемого — значит, часть холда ещё не вернулась.
+    const held = fresh && o.limitBefore != null ? round2(o.limitBefore - spent - S.trip.limitLeft) : 0;
+    const under = done && f.factLiters < f.liters;
+    const [title, text] = done ? ['Заправка завершена', ''] : REASONS[f.reason] || ['Заказ отменён', ''];
+    return page({
+      title: 'Итог',
+      body: `
+        <div class="center">
+          <div class="icon ${done ? 'ok' : 'warn'}">${done ? '✓' : '!'}</div>
+          <div class="big">${title}</div>
+          <div class="muted">${esc(o.what || f.stationName)} · ${esc(o.fuelName || f.fuelName)}</div>
+          ${text ? `<p>${text}</p>` : ''}
+        </div>
+        <section class="card">
+          ${done ? row('Залито', lit(f.factLiters) + (under ? ` из ${lit(f.liters)}` : '')) + row('Списано', rub(spent)) : ''}
+          ${back > 0 ? row(held > 0.01 ? 'Вернётся на лимит' : 'Вернулось на лимит', rub(back)) : ''}
+          ${row('Остаток лимита', fresh ? rub(S.trip.limitLeft) : 'обновится при связи')}
+        </section>
+        ${under ? `<div class="note warn">Залито меньше заказанного: бак полон или колонка остановилась. За недолитые ${lit(round2(f.liters - f.factLiters))} не списали.</div>` : ''}
+        ${held > 0.01 ? `<div class="note warn">${rub(held)} пока заблокированы — АЗС подтвердит возврат позже, обычно к утру.</div>` : ''}
+        ${done ? `<p class="muted">Чек АЗС пришлёт диспетчеру на почту. Номер заказа: ${esc(f.id)}.</p>` : ''}`,
+      bottom: done
+        ? '<button class="btn" data-act="done">На главную</button><button class="btn alt" data-act="reefer">Заправить рефрижератор</button>'
+        : '<button class="btn" data-act="again">Заказать снова</button><button class="btn alt" data-act="done">На главную</button>'
+    });
+  };
+
+  // Заказ закрыт. Новый можно начать с теми же АЗС и колонкой.
+  function closeOrder(draft) {
     S.order = null;
     S.fueling = null;
+    if (draft) S.draft = draft;
     save();
+  }
+  ACTIONS.done = () => {
+    closeOrder();
     go('home');
+  };
+  ACTIONS.again = () => {
+    const f = S.fueling;
+    closeOrder({ stationId: f.stationId, pump: f.pump, fuel: f.fuel, liters: f.liters });
+    go('volume');
+  };
+  // Рефрижератор — отдельный заказ после первого, лимит общий (README, расхождение 13).
+  ACTIONS.reefer = () => {
+    const f = S.fueling;
+    closeOrder({ stationId: f.stationId, pump: f.pump, fuel: f.fuel, liters: null, reefer: true });
+    go('volume');
   };
 
   // ── отладочная панель: index.html?debug ──
