@@ -21,7 +21,7 @@
   const NBSP = '\u00a0';  // неразрывный пробел: «₽» и «л» не уедут на новую строку
   const rub = (n) => num(n, n % 1 ? 2 : 0) + NBSP + '₽';
   const lit = (n) => num(n, 0) + NBSP + 'л';
-  const perL = (n) => num(n, 2) + NBSP + '₽/л';
+  const perL = (n) => num(n, 2) + NBSP + '₽/\u2060л';  // \u2060 — без переноса после «/»
   const time = (ts) => new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
   const dateRu = (iso) => { const [, m, d] = iso.split('-'); return Number(d) + ' ' + MONTHS[m - 1]; };
@@ -159,12 +159,12 @@
       : `<p class="muted">${text}</p>`;
   }
 
-  // Загрузка данных экрана: одна за раз, ошибка попадает в ui.error,
-  // после загрузки перерисовываем — если водитель всё ещё на этом экране.
+  // Загрузка данных экрана: одна за раз для одного ключа (экран или экран + АЗС), ошибка
+  // попадает в ui.error, после загрузки перерисовываем — если водитель всё ещё на этом экране.
   const loading = {};
-  async function fetchFor(screen, fn) {
-    if (loading[screen]) return;
-    loading[screen] = true;
+  async function fetchFor(screen, fn, key = screen) {
+    if (loading[key]) return;
+    loading[key] = true;
     try {
       await fn();
       ui.error = null;
@@ -172,7 +172,7 @@
     } catch (e) {
       ui.error = e;
     }
-    loading[screen] = false;
+    loading[key] = false;
     if (ui.screen === screen) render();
   }
 
@@ -271,14 +271,13 @@
     S.near = all
       .filter((s) => s.prices.diesel)
       .map((s) => Object.assign({}, s, { km: km(S.me, s) }))
-      .filter((s) => s.km <= 60)
-      .sort((a, b) => a.km - b.km)
-      .slice(0, 15);
+      .filter((s) => s.km <= 60)  // все в 60 км нужны и для подсказки «Дальше дешевле»
+      .sort((a, b) => a.km - b.km);
     S.nearAt = Date.now();
   });
 
   SCREENS.stations = () => {
-    const list = S.near;
+    const list = S.near && S.near.slice(0, 15);
     if (!list) return page({ title: 'Где заправляемся?', back: 'home', body: waiting('Ищем АЗС рядом…') });
     const cheapest = Math.min(...list.map((s) => s.prices.diesel));
     return page({
@@ -315,9 +314,13 @@
   const lettered = (st) => st.brand === 'Колесо';
 
   // Свежие данные АЗС при каждом входе: колонки и цены могли измениться.
-  LOADERS.pumps = () => fetchFor('pumps', async () => {
-    S.station = await retry('getStation', [S.draft.stationId]);
-  });
+  // Ответ про АЗС, от которой водитель уже ушёл к другой, не должен затереть новую.
+  async function loadStation() {
+    const id = S.draft.stationId;
+    const st = await retry('getStation', [id]);
+    if (id === S.draft.stationId) S.station = st;
+  }
+  LOADERS.pumps = () => fetchFor('pumps', loadStation, 'pumps:' + S.draft.stationId);
   const station = () => (S.station && S.station.id === S.draft.stationId ? S.station : null);
 
   SCREENS.pumps = () => {
@@ -348,8 +351,10 @@
   ACTIONS.pump = (n) => {
     const p = station().pumps.find((x) => x.number === Number(n));
     S.draft.pump = p.number;
-    S.draft.fuel = sortFuels(p.fuels)[0];  // дизель, если он есть на колонке: он идёт первым в FUELS
-    S.draft.liters = null;
+    // После «Поехать туда» топливо и объём уже выбраны — сохраняем их.
+    // Иначе — дизель, если он есть на колонке (он первый в FUELS), а объём выбирает водитель.
+    if (!p.fuels.includes(S.draft.fuel)) S.draft.fuel = sortFuels(p.fuels)[0];
+    S.draft.liters = S.draft.liters || null;
     save();
     go('volume');
   };
@@ -366,10 +371,21 @@
   }
   const clamp = (v, b) => Math.max(b.min, Math.min(b.max, v));
 
+  // Мера из README, п. 3: переплата видна до заказа. В прототипе упрощённо — самая дешёвая АЗС
+  // в 30 км от выбранной, без учёта направления: маршрута рейса в API нет, только названия городов.
+  const CHEAPER_KM = 30;
+  const CHEAPER_BY = 1;  // ₽/л: порог из практики диспетчера («там дешевле на рубль»)
+  function cheaper(st, fuel) {
+    const best = (S.near || [])
+      .filter((s) => s.id !== st.id && s.prices[fuel] && km(st, s) <= CHEAPER_KM)
+      .sort((a, b) => a.prices[fuel] - b.prices[fuel])[0];
+    return best && st.prices[fuel] - best.prices[fuel] >= CHEAPER_BY ? best : null;
+  }
+
   // От остатка лимита зависит максимум, поэтому на этом экране перечитываем рейс.
   // АЗС подгружаем, если пришли сюда не через выбор колонки («Заказать снова», рефрижератор).
   LOADERS.volume = () => fetchFor('volume', async () => {
-    if (!station()) S.station = await retry('getStation', [S.draft.stationId]);
+    if (!station()) await loadStation();
     await loadTrip();
     if (S.draft.liters) S.draft.liters = clamp(S.draft.liters, bounds(station(), S.draft.fuel));
   });
@@ -384,6 +400,8 @@
     const sum = L ? round2(L * b.price) : 0;
     const byLimit = b.byLimit < st.litersMax;  // что ограничивает сильнее: лимит или АЗС
     const presets = [b.max, 100, 50].filter((v, i) => i === 0 || (v < b.max && v >= b.min));
+    const alt = d.here ? null : cheaper(st, d.fuel);
+    const diff = alt ? round2(b.price - alt.prices[d.fuel]) : 0;
     return page({
       title: d.reefer ? 'Бак рефрижератора' : 'Сколько заливаем?',
       back: 'pumps',
@@ -410,6 +428,16 @@
              <div class="presets">
                ${presets.map((v, i) => `<button class="btn alt${v === L ? ' on' : ''}" data-act="liters" data-arg="${v}">${i ? '' : 'Макс. '}${lit(v)}</button>`).join('')}
              </div>`}
+        ${alt ? `
+        <section class="card overpay">
+          <b>Дальше дешевле: ${esc(short(alt.name))}</b>
+          <div class="muted">${num(Math.round(km(st, alt) * 10) / 10, 0)}&nbsp;км отсюда · ${perL(alt.prices[d.fuel])}, здесь ${perL(b.price)}</div>
+          <div class="over">${L ? `Переплата ${rub(Math.round(L * diff))} за ${lit(L)}` : `Здесь дороже на ${perL(diff)}`}</div>
+          <div class="two">
+            <button class="btn alt" data-act="goCheaper" data-arg="${alt.id}">Поехать туда</button>
+            <button class="btn alt" data-act="stayHere">Залить здесь</button>
+          </div>
+        </section>` : ''}
         <section class="card">
           <div class="row"><span>АЗС отпускает за раз</span><b${byLimit ? '' : ' class="hl"'}>до ${lit(st.litersMax)}</b></div>
           <div class="row"><span>Лимита хватит на</span><b${byLimit ? ' class="hl"' : ''}>${lit(b.byLimit)}</b></div>
@@ -435,6 +463,18 @@
   };
   ACTIONS.liters = (v) => {
     S.draft.liters = Number(v);
+    save();
+    render();
+  };
+  // «Поехать туда»: другая АЗС, топливо и объём сохраняются, колонку выбрать на месте.
+  ACTIONS.goCheaper = (id) => {
+    S.draft = { stationId: id, fuel: S.draft.fuel, liters: S.draft.liters };
+    save();
+    go('pumps');
+  };
+  // «Залить здесь»: водитель решил сам — на этой АЗС карточку больше не показываем.
+  ACTIONS.stayHere = () => {
+    S.draft.here = true;
     save();
     render();
   };
