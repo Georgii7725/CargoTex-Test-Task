@@ -96,7 +96,8 @@
     drawNet();
   }
   const NET_TEXT = {
-    sending: 'Нет связи. Заказ сохранён и уйдёт один раз, когда связь вернётся.'
+    sending: 'Нет связи. Заказ сохранён и уйдёт один раз, когда связь вернётся.',
+    fueling: 'Нет связи. Заправка идёт на стороне АЗС — покажем, где она, как только связь вернётся.'
   };
   function drawNet() {
     $net.hidden = ui.online;
@@ -495,10 +496,104 @@
   };
 
   // ── заправка ──
-  SCREENS.fueling = () => page({
-    title: 'Заправка',
-    body: `<p class="muted">Заказ ${esc(S.fueling.id)}: ${esc(S.fueling.status)}. Экран в работе.</p>`
+  const isFinal = (f) => f.status === 'completed' || f.status === 'cancelled';
+
+  // Колонка ждёт пистолет: со слов диспетчера «секунд сорок», в API — до 60 с (README, расхождение 9).
+  // Отсчёт ведём от меньшего: лучше поторопить водителя, чем дать колонке выключиться.
+  const NOZZLE_WAIT = 40;
+  function nozzleLeft(f) {
+    const s = Math.ceil(NOZZLE_WAIT - (Date.now() - f.createdAt) / 1000 + 3);  // ожидание начинается на 3-й секунде
+    return s > 0 ? `Колонка ждёт ещё ${s} с` : 'Колонка может выключиться в любую секунду';
+  }
+  setInterval(() => {
+    const el = document.getElementById('cd');
+    if (el && S.fueling) el.textContent = nozzleLeft(S.fueling);
+  }, 1000);
+
+  // Опрос заправки: раз в 1,5 с, без связи — всё реже, до 10 с.
+  // Заправка идёт на стороне АЗС и без нас: первый же ответ после обрыва покажет, где она сейчас.
+  let pollTimer = null;
+  let polling = false;
+  let pollFails = 0;
+  let pollAgain = false;  // просили обновить, пока шёл запрос (например, вернулась связь) — повторим сразу
+  LOADERS.fueling = async function poll() {
+    clearTimeout(pollTimer);
+    if (polling) { pollAgain = true; return; }
+    const was = S.fueling;
+    if (!was || isFinal(was)) return;
+    polling = true;
+    try {
+      S.fueling = await call('getFueling', was.id);
+      pollFails = 0;
+      save();
+    } catch (e) {
+      pollFails++;
+      if (e.code === 'NOT_FOUND') {
+        polling = false;
+        S.order = null;
+        S.fueling = null;
+        save();
+        return go('home', { kind: 'err', text: 'Заказ не найден на сервере. Если лимит заблокирован, позвоните диспетчеру.' });
+      }
+    }
+    polling = false;
+    const f = S.fueling;
+    if (isFinal(f)) return go('result');
+    // Перерисовываем, только если что-то изменилось: иначе кнопки пересоздавались бы под пальцем.
+    if (ui.screen === 'fueling' && (f.status !== was.status || f.currentLiters !== was.currentLiters)) render();
+    pollTimer = setTimeout(poll, pollAgain ? 0 : Math.min(10000, 1500 * 2 ** pollFails));
+    pollAgain = false;
+  };
+
+  SCREENS.fueling = () => {
+    const f = S.fueling;
+    const o = S.order || {};
+    let state;
+    if (f.status === 'accepted') {
+      state = `
+        <div class="state"><b>АЗС подтверждает заказ…</b><p class="muted">Обычно это несколько секунд.</p></div>`;
+    } else if (f.status === 'waiting_nozzle') {
+      state = `
+        <div class="state">
+          <b>Вставьте пистолет в бак</b>
+          <p class="countdown" id="cd">${nozzleLeft(f)}</p>
+          <p class="muted">Колонка включена. Не успеете — она выключится, деньги вернутся на лимит.</p>
+        </div>`;
+    } else {
+      state = `
+        <div class="state">
+          <b>Идёт налив</b>
+          <div class="val">${lit(f.currentLiters)}</div>
+          <p class="muted">из ${lit(f.liters)} · примерно ${rub(round2(f.currentLiters * f.price))}</p>
+          <div class="progress"><i style="width:${Math.min(100, (f.currentLiters / f.liters) * 100)}%"></i></div>
+        </div>
+        <div class="note warn">Отменить уже нельзя. Чтобы остановить налив, повесьте пистолет — спишут только за залитое.</div>`;
+    }
+    return page({
+      title: 'Заправка',
+      body: `
+        <section class="card">
+          <div class="muted">${esc(o.what || f.stationName)}</div>
+          <div class="route">${esc(o.fuelName || f.fuelName)} · ${lit(f.liters)}</div>
+          <div class="muted">Заблокировано на лимите ${rub(f.amountHeld)} — спишут только за залитое.</div>
+        </section>
+        ${state}`,
+      bottom: homeButton
+    });
+  };
+
+  // ── итог ──
+  SCREENS.result = () => page({
+    title: 'Итог',
+    body: `<p class="muted">${esc(S.fueling.status)} ${esc(S.fueling.reason || '')}. Экран в работе.</p>`,
+    bottom: '<button class="btn" data-act="done">На главную</button>'
   });
+  ACTIONS.done = () => {
+    S.order = null;
+    S.fueling = null;
+    save();
+    go('home');
+  };
 
   // ── отладочная панель: index.html?debug ──
   // Для показа: выключить связь посреди заправки, убрать случайные сбои API, начать сначала.
