@@ -774,22 +774,43 @@
   };
 
   // ── отладочная панель: index.html?debug ──
-  // Для показа: выключить связь посреди заправки, убрать случайные сбои API, начать сначала.
+  // Для показа: выключить связь посреди заправки, выбрать исход заказа, убрать случайные сбои API, начать сначала.
+
+  // «Вставить пистолет» в API нельзя: исход выбирается случайно при создании заказа
+  // (fake-api.js, стр. 266–267). На время заказа подставляем API нужное «случайное» число.
+  // Все значения больше порогов «колонка занята» (0,08), «цена изменилась» (0,25) и «ответ потерян» (0,1).
+  const OUTCOMES = [['случайно', null], ['налив', 0.5], ['недолив', 0.7], ['нет пистолета', 0.85], ['АЗС молчит', 0.99]];
+
   function mountDebug() {
     const bar = document.createElement('div');
     bar.id = 'dbg';
     document.body.prepend(bar);
+    debug.outcome = 0;
+    const realStart = api.startFueling;
+    api.startFueling = async (req) => {
+      const forced = OUTCOMES[debug.outcome][1];
+      if (forced === null) return realStart(req);
+      const random = Math.random;
+      Math.random = () => forced;
+      try {
+        return await realStart(req);
+      } finally {
+        Math.random = random;
+      }
+    };
     // «Связь: нет» переживает перезагрузку вкладки — чтобы показать запуск без связи.
     debug.offline = sessionStorage.getItem('dbg.offline') === '1';
     if (debug.offline) setOnline(false);
     const draw = () => {
       bar.innerHTML = `<b>Отладка</b>
         <button data-d="net">Связь: ${debug.offline ? 'нет' : 'есть'}</button>
+        <button data-d="outcome">Исход: ${OUTCOMES[debug.outcome][0]}</button>
         <button data-d="err">Сбои API: ${api.config.networkErrors ? 'вкл' : 'выкл'}</button>
         <button data-d="reset">Сбросить всё</button>`;
     };
     bar.addEventListener('click', (e) => {
       const d = e.target.dataset.d;
+      if (d === 'outcome') debug.outcome = (debug.outcome + 1) % OUTCOMES.length;
       if (d === 'net') {
         debug.offline = !debug.offline;
         sessionStorage.setItem('dbg.offline', debug.offline ? '1' : '');
