@@ -1,0 +1,3 @@
+# Прототип ограничен 60 КБ: держим LF, чтобы при скачивании на Windows файлы не росли из-за CRLF.
+index.html text eol=lf
+app.js text eol=lf
